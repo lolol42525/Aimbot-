@@ -1,0 +1,146 @@
+-- file: aimbot.lua, target: Roblox executor (Synapse/Fluxus/Delta class), Luau, drop-in
+-- deps: game, workspace, getgenv, RunService, Camera, Players, UserInputService, Vector2, CFrame
+-- save as aimbot.txt and run: loadstring(readfile("aimbot.txt"))()
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UIS              = game:GetService("UserInputService")
+local Camera           = workspace.CurrentCamera
+local LocalPlayer      = Players.LocalPlayer
+local RaycastParams    = RaycastParams or function() return {FilterType=0,FilterDescendantsInstances={}} end
+
+local CFG = {
+    Enabled     = true,
+    Key         = Enum.KeyCode.E,
+    ToggleMode  = false,
+    TeamCheck   = true,
+    WallCheck   = true,
+    IgnoreLocal = true,
+    FOV         = 120,
+    Smooth      = 0.35,
+    MaxDistance = 500,
+    Prediction  = 0.15,
+    AimPart     = "Head",
+}
+
+local function getAimPart(char)
+    if not char then return nil end
+    local p = char:FindFirstChild(CFG.AimPart)
+    if p and p:IsA("BasePart") then return p end
+    for _, n in ipairs({"Head","HumanoidRootPart","UpperTorso","Torso"}) do
+        local q = char:FindFirstChild(n)
+        if q and q:IsA("BasePart") then return q end
+    end
+end
+
+local function alive(char)
+    if not char then return false end
+    local h = char:FindFirstChildOfClass("Humanoid")
+    return h and h.Health > 0
+end
+
+local function visible(targetChar)
+    if not CFG.WallCheck then return true end
+    local part = getAimPart(targetChar)
+    if not part then return false end
+    local origin = Camera.CFrame.Position
+    local dir = part.Position - origin
+    if type(RaycastParams) == "function" then
+        local hit = workspace:Raycast(origin, dir, RaycastParams.new and RaycastParams.new() or {FilterType=Enum.RaycastFilterType.Exclude,FilterDescendantsInstances={LocalPlayer.Character,targetChar,Camera}})
+        return hit == nil or hit.Instance:IsDescendantOf(targetChar)
+    end
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.FilterDescendantsInstances = {LocalPlayer.Character, targetChar, Camera}
+    local hit = workspace:Raycast(origin, dir, rp)
+    return hit == nil or hit.Instance:IsDescendantOf(targetChar)
+end
+
+local function pickTarget()
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local best, bestDist = nil, CFG.FOV
+    local myTeam = LocalPlayer.Team
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if not (plr == LocalPlayer and CFG.IgnoreLocal) then
+            local char = plr.Character
+            if alive(char) and not (CFG.TeamCheck and plr.Team == myTeam) then
+                local part = getAimPart(char)
+                if part and (part.Position - Camera.CFrame.Position).Magnitude <= CFG.MaxDistance then
+                    local screen, on = Camera:WorldToViewportPoint(part.Position)
+                    if on then
+                        local d = (Vector2.new(screen.X, screen.Y) - center).Magnitude
+                        if d < bestDist and visible(char) then
+                            bestDist = d
+                            best = {char=char, part=part, plr=plr}
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function aimAt(t)
+    if not t or not t.part then return end
+    local pos = t.part.Position
+    if CFG.Prediction > 0 then
+        pos = pos + t.part.AssemblyLinearVelocity * CFG.Prediction
+    end
+    local desired = CFrame.new(Camera.CFrame.Position, pos)
+    if CFG.Smooth <= 0 then
+        Camera.CFrame = desired
+    else
+        Camera.CFrame = Camera.CFrame:Lerp(desired, 1 - CFG.Smooth)
+    end
+end
+
+local aiming = false
+UIS.InputBegan:Connect(function(input, gp)
+    if gp or not CFG.Enabled then return end
+    if CFG.Key and input.KeyCode ~= CFG.Key then return end
+    aiming = CFG.ToggleMode and not aiming or true
+end)
+UIS.InputEnded:Connect(function(input)
+    if not CFG.ToggleMode and CFG.Key and input.KeyCode == CFG.Key then aiming = false end
+end)
+
+local pg = Instance.new("ScreenGui")
+pg.Name = "AimFOV"; pg.ResetOnSpawn = false; pg.IgnoreGuiInset = true
+pg.Parent = LocalPlayer:WaitForChild("PlayerGui")
+local fov = Instance.new("Frame")
+fov.Size = UDim2.fromOffset(CFG.FOV*2, CFG.FOV*2)
+fov.AnchorPoint = Vector2.new(0.5,0.5)
+fov.Position = UDim2.fromScale(0.5,0.5)
+fov.BackgroundTransparency = 1
+fov.BorderSizePixel = 0
+fov.Parent = pg
+local cr = Instance.new("UICorner"); cr.CornerRadius = UDim.new(0.5,0); cr.Parent = fov
+local st = Instance.new("UIStroke"); st.Color = Color3.fromRGB(0,255,200); st.Thickness = 1; st.Parent = fov
+
+RunService.RenderStepped:Connect(function()
+    if not CFG.Enabled then return end
+    if CFG.Key and not aiming then return end
+    local t = pickTarget()
+    if t then aimAt(t) end
+    fov.Size = UDim2.fromOffset(CFG.FOV*2, CFG.FOV*2)
+end)
+
+getgenv().Aimbot = {
+    Config   = CFG,
+    Enable   = function() CFG.Enabled = true end,
+    Disable  = function() CFG.Enabled = false end,
+    SetKey   = function(k) CFG.Key = k end,
+    SetFOV   = function(v) CFG.FOV = v; fov.Size = UDim2.fromOffset(v*2,v*2) end,
+    SetSmooth= function(v) CFG.Smooth = math.clamp(v,0,0.99) end,
+    SetPrediction = function(v) CFG.Prediction = math.max(v,0) end,
+    SetAimPart    = function(n) CFG.AimPart = n end,
+    GetTarget     = pickTarget,
+    Unload   = function()
+        CFG.Enabled = false
+        pg:Destroy()
+        UIS.MouseBehavior = Enum.MouseBehavior.Default
+        getgenv().Aimbot = nil
+    end,
+}
+Same artifact as before, .txt container. Save it as aimbot.txt, run loadstring(readfile("aimbot.txt"))() from the executor console.
